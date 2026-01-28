@@ -3,6 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const prompts = require('prompts');
+const util = require('util');
+const { exec } = require('child_process');
+
+const execAsync = util.promisify(exec);
 
 async function loadResume(filePath) {
   const absolutePath = path.resolve(process.cwd(), filePath);
@@ -182,6 +186,40 @@ function buildFilteredResume(resume, sectionsSelection, itemsSelectionBySection,
   }
 
   return result;
+}
+
+async function getGlobalJsonResumeThemes() {
+  try {
+    const { stdout } = await execAsync('npm ls -g --depth=0 --json');
+    const parsed = JSON.parse(stdout || '{}');
+    const deps = parsed.dependencies || {};
+    const allNames = Object.keys(deps);
+    return allNames.filter((name) => name.startsWith('jsonresume-theme-')).sort();
+  } catch (err) {
+    console.error('Unable to detect global jsonresume-theme-* packages:', err.message);
+    return [];
+  }
+}
+
+async function ensureResumedInstalled() {
+  try {
+    await execAsync('resumed --version');
+    return true;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    const looksMissing =
+      err.code === 'ENOENT' ||
+      /not recognized as an internal or external command/i.test(message) ||
+      /command not found/i.test(message);
+
+    if (looksMissing) {
+      console.error('The "resumed" CLI does not appear to be installed globally.');
+      console.error('Please install it with: npm install -g resumed');
+    } else {
+      console.error('Error while checking for the "resumed" CLI:', message);
+    }
+    return false;
+  }
 }
 
 async function main() {
@@ -415,6 +453,71 @@ async function main() {
     await fs.promises.writeFile(finalOutputPath, JSON.stringify(filteredResume, null, 2), 'utf8');
 
     console.log(`Generated resume written to: ${finalOutputPath}`);
+
+    // After generating the shorter resume, let the user pick a jsonresume theme for export via resumed.
+    const themes = await getGlobalJsonResumeThemes();
+
+    if (!themes.length) {
+      console.log(
+        'No global jsonresume-theme-* packages found. Install one globally, e.g. "npm install -g jsonresume-theme-even", then re-run this tool.'
+      );
+      return;
+    }
+
+    const { selectedTheme } = await prompts({
+      type: 'select',
+      name: 'selectedTheme',
+      message: 'Select a jsonresume theme to use when exporting with resumed',
+      choices: themes.map((name) => ({ title: name, value: name }))
+    });
+
+    if (!selectedTheme) {
+      console.log('No theme selected. You can run the export manually later with "resumed".');
+      return;
+    }
+
+    console.log(`Selected theme: ${selectedTheme}`);
+
+    const hasResumed = await ensureResumedInstalled();
+    if (!hasResumed) {
+      console.log(
+        'Cannot continue with export because "resumed" is not available. Please install it globally and re-run.'
+      );
+      return;
+    }
+
+    const { exportPath } = await prompts({
+      type: 'text',
+      name: 'exportPath',
+      message: 'Path for exported resume file (PDF, handled by resumed)',
+      initial: 'resume.pdf'
+    });
+
+    const finalExportPath = path.resolve(
+      process.cwd(),
+      exportPath && exportPath.trim().length ? exportPath.trim() : 'resume.pdf'
+    );
+
+    console.log(`Exporting resume with resumed to: ${finalExportPath}`);
+
+    try {
+      // Use "export" alias for "render" so we can pass input file and options.
+      const cmd = `resumed export "${finalOutputPath}" --theme "${selectedTheme}" --output "${finalExportPath}"`;
+      const { stdout, stderr } = await execAsync(cmd);
+      if (stdout && stdout.trim()) {
+        console.log(stdout.trim());
+      }
+      if (stderr && stderr.trim()) {
+        console.error(stderr.trim());
+      }
+      console.log(`Resume successfully exported to: ${finalExportPath}`);
+    } catch (err) {
+      console.error('Failed to export resume with resumed:', err.message);
+      console.error(
+        'You can try running the command manually:',
+        `resumed export "${finalOutputPath}" --theme "${selectedTheme}" --output "${finalExportPath}"`
+      );
+    }
   } catch (err) {
     console.error('Error while generating resume:', err.message);
     process.exit(1);
