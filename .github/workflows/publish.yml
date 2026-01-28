@@ -3,10 +3,10 @@ name: Publish to npm
 on:
   workflow_dispatch:
     inputs:
-      npm_tag:
-        description: 'npm dist-tag to publish under (e.g. latest, next)'
-        required: false
-        default: 'latest'
+      version:
+        description: 'Version to publish (e.g. 1.2.3)'
+        required: true
+        type: string
 
 jobs:
   publish:
@@ -25,21 +25,20 @@ jobs:
           node-version: '21'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
-        run: npm ci
-
-      # Add build step here if the package ever needs to be built before publishing.
-      # - name: Build
-      #   run: npm run build
-
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Determine version
+        id: version
         run: |
-          if [ "${{ github.event.inputs.npm_tag }}" != "latest" ] && [ -n "${{ github.event.inputs.npm_tag }}" ]; then
-            npm publish --access public --tag "${{ github.event.inputs.npm_tag }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           else
-            npm publish --access public
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.VERSION }} --no-git-tag-version
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
